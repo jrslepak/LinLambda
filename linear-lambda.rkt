@@ -192,26 +192,6 @@
    (excludes (x (lin p)) ((x_more τ_more) ...))])
   
 
-;; TODO: context difference metafunction
-;; using this in type rules would cause no-pattern-matched error if
-;; linear-typed values are misused in certain ways
-
-;; choose the more restrictive of two type qualifiers
-(define-metafunction Linλ
-  qual-meet : q q -> q
-  [(qual-meet un un) un]
-  [(qual-meet lin lin) lin]
-  [(qual-meet un lin) lin]
-  [(qual-meet lin un) lin])
-
-;; choose the less restrictive of two type qualifiers
-(define-metafunction Linλ
-  qual-join : q q -> q
-  [(qual-join un un) un]
-  [(qual-join lin lin) lin]
-  [(qual-join un lin) un]
-  [(qual-join lin un) un])
-
 (define-metafunction Linλ
   concat-type-env : Γ Γ -> Γ
   [(concat-type-env ((x_0 τ_0) ...) ((x_1 τ_1) ...)) ((x_0 τ_0) ... (x_1 τ_1) ...)])
@@ -220,6 +200,7 @@
   ext-type-env : Γ (x τ) -> Γ
   [(ext-type-env ((x_0 τ_0) ...) (x_1 τ_1)) ((x_0 τ_0) ... (x_1 τ_1))])
 
+;; substitution of free variables
 (define-metafunction Linλ
   var-sub : ((x e) ...) e -> e
   
@@ -621,3 +602,14 @@
  (judgment-holds (typeof () (fix (lin λ (x (lin Int)) (+ x (un 3)))) τ Γ))
  #f)
 
+; test the typing judgment on programs used for testing the semantics
+(test-equal
+ (judgment-holds (typeof ()
+                         ((,Linλ-uncurry ,curried-add) (un pair (un 3) (un 2))) τ Γ)
+                 τ)
+ '((un Int)))
+(test-equal
+ (judgment-holds (typeof ()
+                         (((,Linλ-curry ,uncurried-add) (un 3)) (un 2)) τ Γ)
+                 τ)
+ '((un Int)))
