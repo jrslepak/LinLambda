@@ -25,8 +25,8 @@
      un)               ; unrestricted: can use any number of times
   ; pre-types
   (p Int               ; integer, the only base type
-     (p -> p)          ; function
-     (p * p))          ; pair
+     (τ -> τ)          ; function
+     (τ * τ))          ; pair
   ; full types, i.e. types with qualifiers
   (τ (q p))
   ; evaluation contexts
@@ -74,13 +74,152 @@
         op*]
    [--> (in-hole E (fix e))
         (in-hole E (e (fix e)))
-        fixpoint]
-   ))
+        fixpoint]))
 
+
+;-------------------------------------------------------------------------------
+; typechecking
+;-------------------------------------------------------------------------------
+(define-judgment-form Linλ
+  #:mode(typeof I I O O)
+  #:contract(typeof Γ e τ Γ)
+  ; int literals just use their annotated type qualifier
+  [(typeof Γ (q n) (q Int) Γ)]
+  
+  ; using an unrestricted variable does not change the output environment
+  [(typeof ((x_0 τ_0) ... (x_1 (un p)) (x_2 τ_2) ...)
+           x_1
+           (un p)
+           ((x_0 τ_0) ... (x_1 (un p)) (x_2 τ_2) ...))]
+  
+  ; linear variable has been used -- exclude it from the output environment
+  [(typeof ((x_0 τ_0) ... (x_1 (lin p)) (x_2 τ_2) ...)
+           x_1
+           (lin p)
+           ((x_0 τ_0) ... (x_2 τ_2) ...))]
+  
+  ; antecedent must be Int with any qualifier (if0 uses it exactly once)
+  ; consequent and alternate must be of the same type
+  [(typeof Γ_1 e_ante (q Int) Γ_2)
+   (typeof Γ_2 e_cons τ Γ_3)
+   (typeof Γ_2 e_alt τ Γ_3)
+   ---
+   (typeof Γ_1 (if0 e_ante e_cons e_alt) τ Γ_3)]
+  
+  ; pair must be at least as restrictive as its components
+  [(typeof Γ_1 e_left (q_left p_left) Γ_2)
+   (typeof Γ_2 e_right (q_right p_right) Γ_3)
+   (subkind q_pair q_left)
+   (subkind q_pair q_right)
+   ---
+   (typeof Γ_1 (q_pair pair e_left e_right) (q_pair ((q_left p_left) * (q_right p_right))) Γ_3)]
+  
+  ; split
+  [(typeof Γ_1 e_pair (q (τ_left * τ_right)) Γ_2)
+   (typeof (ext-type-env (ext-type-env Γ_2 (x_left τ_left)) (x_right τ_right)) e_body τ Γ_3)
+   (ctxt-diff Γ_3 ( (x_left τ_left) (x_right τ_right) ) Γ_difference)
+   ---
+   (typeof Γ_1 (split e_pair (x_left x_right) e_body) τ Γ_difference)]
+  
+  ; primitive ops give unrestricted results
+  ; looks a lot like pair rule, only no qualifier on result
+  [(typeof Γ_1 e_left (q_left Int) Γ_2)
+   (typeof Γ_2 e_right (q_right Int) Γ_3)
+   ---
+   (typeof Γ_1 (op e_left e_right) (un Int) Γ_3)]
+  
+  ; linear lambda and unrestricted lambda are treated slightly differently
+  ; with unrestricted case, must use context difference to ensure no linear
+  ; variables from the outside environment are used inside the function body
+  [(typeof (ext-type-env Γ_1 (x τ_arg)) e_body τ_ret Γ_2)
+   (ctxt-diff Γ_2 ((x τ_arg)) Γ_3)
+   ---
+   (typeof Γ_1 (lin λ (x τ_arg) e_body) (lin (τ_arg -> τ_ret)) Γ_3)]
+  [(typeof (ext-type-env Γ_1 (x τ_arg)) e_body τ_ret Γ_2)
+   (ctxt-diff Γ_2 ((x τ_arg)) Γ_3)
+   (ctxt-diff Γ_2 ((x τ_arg)) Γ_1)
+   ---
+   (typeof Γ_1 (un λ (x τ_arg) e_body) (un (τ_arg -> τ_ret)) Γ_3)]
+  
+  ; application
+  [(typeof Γ_1 e_fun (q (τ_arg -> τ_ret)) Γ_2)
+   (typeof Γ_2 e_arg τ_arg Γ_3)
+   ---
+   (typeof Γ_1 (e_fun e_arg) τ_ret Γ_3)]
+  
+  ; fix cannot be used on linear function because it must be possible to
+  ; apply the function an arbitrary number of times
+  [(typeof Γ_1 e (un (τ -> τ)) Γ_2)
+   ---
+   (typeof Γ_1 (fix e) τ Γ_2)]
+  
+  )
+
+;; judgment for "at least as restrictive as" relation
+(define-judgment-form Linλ
+  #:mode(subkind I I)
+  #:contract(subkind q q)
+  [(subkind un un)]
+  [(subkind lin un)]
+  [(subkind lin lin)])
+
+;; judgment for context difference
+(define-judgment-form Linλ
+  #:mode(ctxt-diff I I O)
+  #:contract(ctxt-diff Γ Γ Γ)
+  [(ctxt-diff Γ () Γ)]
+  [(ctxt-diff Γ_1 ((x_0 τ_0) ...) Γ_3)
+   (side-condition (excludes (x (lin p)) Γ_3))
+   ;(ctxt-diff () () (excludes (x (lin p)) Γ_3))
+   ---
+   (ctxt-diff Γ_1 ((x_0 τ_0) ... (x (lin p))) Γ_3)]
+   
+  [(ctxt-diff Γ ((x_0 τ_0) ...) ((x_1 τ_1) ... (x_un (un p)) (x_2 τ_2) ...))
+   ---
+   (ctxt-diff Γ ((x_0 τ_0) ... (x_un (un p))) ((x_1 τ_1) ... (x_2 τ_2) ...))]
+  )
 
 ;-------------------------------------------------------------------------------
 ; utility metafunctions
 ;-------------------------------------------------------------------------------
+;; list exclusion check
+;; used for context difference judgment
+(define-metafunction Linλ
+  excludes : (x (lin p)) Γ -> any
+  [(excludes (x (lin p)) ()) #t]
+  [(excludes (x (lin p)) ((x (lin p)) (x_others τ_others) ...)) #f]
+  [(excludes (x (lin p)) ((x_other τ_other) (x_more τ_more) ...))
+   (excludes (x (lin p)) ((x_more τ_more) ...))])
+  
+
+;; TODO: context difference metafunction
+;; using this in type rules would cause no-pattern-matched error if
+;; linear-typed values are misused in certain ways
+
+;; choose the more restrictive of two type qualifiers
+(define-metafunction Linλ
+  qual-meet : q q -> q
+  [(qual-meet un un) un]
+  [(qual-meet lin lin) lin]
+  [(qual-meet un lin) lin]
+  [(qual-meet lin un) lin])
+
+;; choose the less restrictive of two type qualifiers
+(define-metafunction Linλ
+  qual-join : q q -> q
+  [(qual-join un un) un]
+  [(qual-join lin lin) lin]
+  [(qual-join un lin) un]
+  [(qual-join lin un) un])
+
+(define-metafunction Linλ
+  concat-type-env : Γ Γ -> Γ
+  [(concat-type-env ((x_0 τ_0) ...) ((x_1 τ_1) ...)) ((x_0 τ_0) ... (x_1 τ_1) ...)])
+
+(define-metafunction Linλ
+  ext-type-env : Γ (x τ) -> Γ
+  [(ext-type-env ((x_0 τ_0) ...) (x_1 τ_1)) ((x_0 τ_0) ... (x_1 τ_1))])
+
 (define-metafunction Linλ
   var-sub : ((x e) ...) e -> e
   
@@ -90,20 +229,19 @@
   ;; 2. a variable not in the substitution list
   [(var-sub ((x_0 e_0) ...) x_1)  x_1]
   ;; 3. base value literal
-  [(var-sub ((x_0 e_0) ...)
-            (q n))
+  [(var-sub ((x_0 e_0) ...) (q n))
    (q n)]
   
   
   ;; interesting recursive cases: binding forms
   ;; 1. λ which rebinds variable
-  [(var-sub ((x_0 e_0) ... (x_param e_param) (x_2 e_2) ...)
-            (q λ (x_param τ_param) e_body))
-   (q λ (x_param τ_param) (var-sub ((x_0 e_0) ... (x_2 e_2) ...) e_body))]
+  [(var-sub ((x_0 e_0) ... (x_arg e_arg) (x_2 e_2) ...)
+            (q λ (x_arg τ_arg) e_body))
+   (q λ (x_arg τ_arg) (var-sub ((x_0 e_0) ... (x_2 e_2) ...) e_body))]
   ;; 2. λ which does not rebind variable
   [(var-sub ((x_0 e_0) ...)
-            (q λ (x_param τ_param) e_body))
-   (q λ (x_param τ_param) (var-sub ((x_0 e_0) ...) e_body))]
+            (q λ (x_arg τ_arg) e_body))
+   (q λ (x_arg τ_arg) (var-sub ((x_0 e_0) ...) e_body))]
   
   ;; 3. split which rebinds both variables (they may appear in either order)
   [(var-sub ((x_0 e_0) ...
@@ -193,8 +331,7 @@
   ;; fix
   [(var-sub ((x_0 e_0) ...)
             (fix e_fun))
-   (fix (var-sub ((x_0 e_0) ...) e_fun))]
-  )
+   (fix (var-sub ((x_0 e_0) ...) e_fun))])
 
 
 ;-------------------------------------------------------------------------------
@@ -250,7 +387,7 @@
 
 ;; hits if0-true, if0-false, fixpoint, app-name, op+, op-, op*
 (define Linλ-fact
-  (term (fix (un λ (f (un (Int -> Int)))
+  (term (fix (un λ (f (un ((un Int) -> (un Int))))
                  (un λ (x (un Int))
                      (if0 x
                           (un 1)
@@ -259,15 +396,228 @@
 
 ;; hits app-name, split, op+
 (define Linλ-curry
-  (term (un λ (f (un ((Int * Int) -> Int)))
+  (term (un λ (f (un ((un ((un Int) * (un Int))) -> (un Int))))
             (un λ (x (un Int))
                 (un λ (y (un Int))
                     (f (un pair x y)))))))
 (define Linλ-uncurry
-  (term (un λ (f (un (Int -> (Int -> Int))))
-            (un λ (xy (un (Int * Int)))
+  (term (un λ (f (un ((un Int) -> (un ((un Int) -> (un Int))))))
+            (un λ (xy (un ((un Int) * (un Int))))
                 (split xy (x y) ((f x) y))))))
 (define curried-add (term (un λ (x (un Int)) (un λ (y (un Int)) (+ x y)))))
-(define uncurried-add (term (un λ (xy (un (Int * Int))) (split xy (x y) (+ x y)))))
+(define uncurried-add (term (un λ (xy (un ((un Int) * (un Int)))) (split xy (x y) (+ x y)))))
 (test-->> ->β (term ((,Linλ-uncurry ,curried-add) (un pair (un 3) (un 2)))) (term (un 5)))
 (test-->> ->β (term (((,Linλ-curry ,uncurried-add) (un 3)) (un 2))) (term (un 5)))
+
+
+
+;-------------------------------------------------------------------------------
+; typeof tests
+;-------------------------------------------------------------------------------
+; unrestricted integer
+(test-equal
+ (judgment-holds (typeof () (un 3) τ Γ) (τ Γ))
+ '( ((un Int)
+     ()) ))
+
+; linear integer
+(test-equal
+ (judgment-holds (typeof () (lin 3) τ Γ) (τ Γ))
+ '( ((lin Int)
+     ()) ))
+
+; unrestricted variable
+(test-equal
+ (judgment-holds
+  (typeof ((x (un Int))
+           (y (un ((un Int) -> (un Int))))
+           (z (lin Int)))
+          x τ Γ)
+  (τ Γ))
+ '( ((un Int)
+     ((x (un Int))
+      (y (un ((un Int) -> (un Int))))
+      (z (lin Int)))) ))
+
+; linear variable
+(test-equal
+ (judgment-holds (typeof ((x (un Int))
+                          (y (lin ((un Int) -> (un Int))))
+                          (z (lin Int)))
+                         y τ Γ)
+                 (τ Γ))
+ '( ((lin ((un Int) -> (un Int)))
+     ((x (un Int))
+      (z (lin Int)))) )) ; unused linear variable still present
+
+; free variable
+(test-equal
+ (judgment-holds
+  (typeof ((x (un Int))
+           (y (un ((un Int) -> (un Int))))
+           (z (lin Int)))
+          w τ Γ))
+ #f)
+
+; if0 -- linear antecedent
+(test-equal
+ (judgment-holds (typeof ((x (un Int))
+                          (y (lin ((un Int) -> (un Int))))
+                          (z (lin ((un Int) -> (un Int)))))
+                         (if0 x y y) τ Γ)
+                 (τ Γ))
+ '( ((lin ((un Int) -> (un Int)))
+     ((x (un Int))
+      (z (lin ((un Int) -> (un Int)))))) ))
+
+; if0 -- consequent and alternate mismatched
+(test-equal
+ (judgment-holds (typeof ((x (un Int))
+                          (y (lin ((un Int) -> (un Int))))
+                          (z (un ((un Int) -> (un Int)))))
+                         (if0 x y z) τ Γ))
+ #f)
+
+; pair -- un and lin can make lin, consumes lin variable
+(test-equal
+ (judgment-holds (typeof ((x (un Int))
+                          (y (lin ((un Int) -> (un Int)))))
+                         (lin pair x y) τ Γ)
+                 (τ Γ))
+ '( ((lin ((un Int) * (lin ((un Int) -> (un Int)))))
+     ((x (un Int)))) ))
+
+; pair -- un and lin cannot make un
+(test-equal
+ (judgment-holds (typeof ((x (un Int))
+                          (y (lin ((un Int) -> (un Int)))))
+                         (un pair x y) τ Γ))
+ #f)
+
+; pair -- un and un can make lin
+(test-equal
+ (judgment-holds (typeof ((x (un Int))
+                          (y (un ((un Int) -> (un Int)))))
+                         (lin pair x y) τ Γ)
+                 (τ Γ))
+ '( ((lin ((un Int) * (un ((un Int) -> (un Int)))))
+     ((x (un Int))
+      (y (un ((un Int) -> (un Int)))))) ))
+
+
+; split -- uses the linear component
+(test-equal
+ (judgment-holds (typeof ()
+                         (split (lin pair (lin 2) (un 3)) (x y) x) τ Γ)
+                 (τ Γ))
+            '( ((lin Int)
+                ()) ))
+
+; split -- doesn't use the linear component, so doesn't typecheck
+(test-equal
+ (judgment-holds (typeof ()
+                         (split (lin pair (lin 2) (un 3)) (x y) y) τ Γ))
+ #f)
+
+; arithmetic -- uses up the linear variables
+(test-equal
+ (judgment-holds (typeof ((x (lin Int))
+                          (y (lin Int))
+                          (z (un Int)))
+                         (+ x y) τ Γ)
+                 (τ Γ))
+ '( ((un Int) ( (z (un Int)) )) ))
+
+; arithmetic -- no linear variables to use
+(test-equal
+ (judgment-holds (typeof ((x (un Int))
+                          (y (un Int))
+                          (z (un Int)))
+                         (+ x y) τ Γ)
+                 (τ Γ))
+ '( ((un Int) ( (x (un Int))
+                (y (un Int))
+                (z (un Int)) )) ))
+
+; arithmetic -- some linear variables unused
+(test-equal
+ (judgment-holds (typeof ((x (lin Int))
+                          (y (lin Int))
+                          (z (un Int)))
+                         (+ x z) τ Γ)
+                 (τ Γ))
+ '( ((un Int) ( (y (lin Int))
+                (z (un Int)) )) ))
+
+; arithmetic -- linear variable overused
+(test-equal
+ (judgment-holds (typeof ((x (lin Int))
+                          (y (un Int))
+                          (z (un Int)))
+                         (+ x x) τ Γ))
+ #f)
+
+; lambda -- using unrestricted variable from environment is ok
+(test-equal
+ (judgment-holds (typeof ((k (un Int)))
+                         (un λ (x (lin Int)) (* k x)) τ Γ)
+                 (τ Γ))
+ '( ((un ((lin Int) -> (un Int)))
+     ((k (un Int))) ) ))
+(test-equal
+ (judgment-holds (typeof ((k (un Int)))
+                         (lin λ (x (lin Int)) (* k x)) τ Γ)
+                 (τ Γ))
+ '( ((lin ((lin Int) -> (un Int)))
+     ((k (un Int))) ) ))
+
+; lambda -- can't make an unrestricted lambda that uses a linear variable
+(test-equal
+ (judgment-holds (typeof ((k (lin Int)))
+                         (un λ (x (lin Int)) (* k x)) τ Γ))
+ #f)
+
+; application -- unrestricted value can bind to unrestricted variable
+(test-equal
+ (judgment-holds (typeof () ((un λ (x (un Int)) (+ x (un 3)))
+                             (un 5)) τ Γ) (τ Γ))
+ '(((un Int) ())))
+
+; application -- linear value can bind to linear variable
+; addition still returns an unrestricted Int
+(test-equal
+ (judgment-holds (typeof () ((un λ (x (lin Int)) (+ x (un 3)))
+                             (lin 5)) τ Γ) (τ Γ))
+ '(((un Int) ())))
+
+; application -- can't bind a linear value to an unrestricted variable
+(test-equal
+ (judgment-holds (typeof () ((un λ (x (un Int)) (+ x (un 3)))
+                             (lin 5)) τ Γ))
+ #f)
+
+; application -- can't bind an unrestricted value to a linear variable
+(test-equal
+ (judgment-holds (typeof () ((un λ (x (lin Int)) (+ x (un 3)))
+                             (un 5)) τ Γ))
+ #f)
+
+; fix
+(test-equal
+ (judgment-holds (typeof () (fix (un λ (x (un Int)) (+ x (un 3)))) τ Γ) (τ Γ))
+ '(((un Int) ())))
+
+; fix -- cannot use fixed point operator on linear-typed function
+(test-equal
+ (judgment-holds (typeof () (fix (lin λ (x (un Int)) (+ x (un 3)))) τ Γ))
+ #f)
+
+; fix -- cannot use fixed point operator on function with different
+; input and output types
+(test-equal
+ (judgment-holds (typeof () (fix (lin λ (x (un ((un Int) -> (un Int)))) (x (un 3)))) τ Γ))
+ #f)
+(test-equal
+ (judgment-holds (typeof () (fix (lin λ (x (lin Int)) (+ x (un 3)))) τ Γ))
+ #f)
+
